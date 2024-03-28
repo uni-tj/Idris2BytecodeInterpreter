@@ -2,13 +2,19 @@ module BytecodeInterpreter
 import Data.Vect
 import Data.Fin
 import Debug.Trace
+-- Data Types that can be Pushed on the Stack and Saved in a Variables 
 data Tpe : Type where
   Text : Tpe
   Long : Tpe
   Float : Tpe
   Boolean : Tpe
-  HeapType : Tpe
-  Vd:Tpe
+  HeapType : Tpe -- Memory Reference Type 
+  Vd:Tpe -- Void Type for Empty Returns
+
+-- Types for the Heap on feature/heap
+data HeapT : Type where 
+  ArrayT: (n: Nat) -> Tpe -> HeapT    
+  Boxed : Tpe -> HeapT 
 
 Locals : Nat -> Type
 Locals n = Vect n Tpe
@@ -16,24 +22,23 @@ Locals n = Vect n Tpe
 Operands : Nat -> Type
 Operands n = Vect n Tpe
 
-data HeapT : Type where 
-  ArrayT: (n: Nat) -> Tpe -> HeapT    
-  Boxed : Tpe -> HeapT 
-
+-- Index for accesing 
 data Index : Vect n t -> t -> Type where
   Z : Index (vt :: ts) vt
   S : Index ts vt -> Index (u :: ts) vt
 %name Index idx, idx'   
 
+-- Values of Type Tpe 
 data Value : Tpe -> Type where
   TextValue : String -> Value Text
   LongValue : Int -> Value Long
   FloatValue : Double -> Value Float
   BooleanValue : Bool -> Value Boolean
-  MemoryRef : Index hp t  -> Value HeapType
-  NoValue : Value Vd
+  MemoryRef : Index hp t  -> Value HeapType -- A Memory Reference onto the Heap
+  NoValue : Value Vd -- Void / Null Value 
 
 %name Value val, val1, val2
+-- Show instance for displaying Values in the console
 Show (Value Text) where
   show (TextValue t) = t
 Show (Value Long) where
@@ -42,40 +47,50 @@ Show (Value Boolean) where
   show (BooleanValue l) = show l
 Show (Value Vd) where
   show (NoValue) = "NoValue"
+
+-- Heap Datatypes that are not in use on this branch 
 namespace Heap
+  -- A Memory Cell that can be Empty or can hold one value
   data MemoryCell: Maybe Tpe -> Type where
     Empty : MemoryCell Nothing 
     Data : Value t -> MemoryCell (Just t)
-
+  -- A Block of Memory Cells that holds a "Value" of HeapT
   data MemBlock : Fin m -> HeapT -> Type where 
     Block : (s: Fin m) -> Index os bt -> MemBlock s bt  
 
+  -- The Heap that consist of a Vect of Memory Blocks
   data Heap :  Vect bs HeapT->    (m: Nat) -> (s:Fin (S m))-> Type where 
     Nil :(m:Nat) -> Heap []  m $ 0
     (::) :MemBlock s bt -> Heap hp m b -> Heap  (bt :: hp) m (b + s)
 
 
-
+-- The Environment that Holds a List of Values of Tpe 
 data Environment : Vect n t  -> Type where
   Nil : Environment []
   (::) : (v:Value t) -> Environment ts -> Environment (t :: ts)
-
 %name Environment env, env1, env2 
--- This function's type signature is simplified for demonstration purposes.
+
+-- Function For Merging Environments 
 mergeEnv : Environment xs -> Environment ys -> Environment (xs ++ ys)
 mergeEnv Nil env1 = env1
 mergeEnv (v :: env) env1 = v :: (mergeEnv env env1)
-
+--Split Environment into two Environment
+splitEnv : {os : Vect n t} ->Environment (os++is)  -> (Environment os, Environment is)
+splitEnv {os = []} env = ([], env)
+splitEnv {os = (x :: xs)} (v::env) = case (splitEnv env) of
+                                     (os', is') => ((v::os'), is')
 Num (Value Long) where
   (+) (LongValue x) (LongValue y) = LongValue (x + y)
   (*) (LongValue x) (LongValue y) = LongValue (x * y)
   fromInteger x = LongValue (fromInteger x)
 
+-- Operator Defintions for Unary Operations 
 data UnOp : Tpe -> Tpe -> Type where
   Inc: UnOp Long Long
   Dec: UnOp Long Long
   Not : UnOp Boolean Boolean 
 
+-- Operator Defintion for Binary Operations
 data BinOp: Tpe -> Tpe -> Type where
   Append: BinOp Text Text
   Add : BinOp Long Long 
@@ -106,36 +121,34 @@ data BinOp: Tpe -> Tpe -> Type where
   LXOR : BinOp Boolean Boolean
 
 mutual 
+  -- Definitions for Different Instructions 
   data Instruction : Locals l -> Operands i   -> Maybe Tpe -> Type where
-    LoadConstant : Value v -> Instruction ls (v:: os) t -> Instruction ls (os) t 
-    BinaryOperation : BinOp it ot -> Instruction ls (ot::os) t -> Instruction ls (it :: it :: os) t
-    UnaryOperation : UnOp it ot -> Instruction ls (ot::os) t -> Instruction ls ( it :: os) t
-    Store : Index ls vt -> Instruction ls os t -> Instruction ls (vt:: os) t
-    Load : Index ls vt -> Instruction ls (vt:: os) t -> Instruction ls os t
-    Return : Instruction ls (t ::[]) (Just t)
-    VoidReturn : Instruction ls [] (Just Vd)
-    NoOp : Instruction ls os rt -> Instruction ls os rt
-    Dup : Instruction ls (v :: v::os) rt -> Instruction ls (v :: os) rt
-    FlowBreak :{- Instruction ls os (Just rt) -> -}Instruction ls [] Nothing
-    Jump :Instruction ls os rt ->Instruction ls os rt
-    CondJump :Instruction ls os rt -> Instruction ls os rt -> Instruction ls (Boolean :: os) rt
-    FunctionCall : Func args frt -> Instruction ls (frt :: []) rt -> Instruction ls (args)  rt
-    If : Instruction ls ([])  Nothing ->  Maybe (Instruction ls [] Nothing) -> Instruction ls [] rt -> Instruction ls (Boolean :: ([])) rt 
-    While: Instruction ls [] (Just Boolean) ->  Instruction ls [] Nothing -> Instruction ls [] rt -> Instruction ls [] rt
-    {- If' : {trueRet : Bool} -> {falseRet:Bool} -> Instruction ls ([])  (case trueRet of
-                                                                            True => FlowBreakType
-                                                                            False => rt) ->  Maybe (Instruction ls [] FlowBreakType) -> Instruction ls [] rt -> Instruction ls (Boolean :: ([])) rt  -}
+    LoadConstant : Value v -> Instruction ls (v:: os) t -> Instruction ls (os) t -- Load a constant value onto the stack
+    BinaryOperation : BinOp it ot -> Instruction ls (ot::os) t -> Instruction ls (it :: it :: os) t -- Perform a BinaryOperation with to values on the stack
+    UnaryOperation : UnOp it ot -> Instruction ls (ot::os) t -> Instruction ls ( it :: os) t -- Perform a UnaryOperation with to values on the stack
+    Store : Index ls vt -> Instruction ls os t -> Instruction ls (vt:: os) t -- Store the first value on the stack into a variable by the index proof provided
+    Load : Index ls vt -> Instruction ls (vt:: os) t -> Instruction ls os t -- Load a Value from a variable by the index proof provided onto the stack
+    Return : Instruction ls (t ::[]) (Just t) -- Return the last value on the stack
+    VoidReturn : Instruction ls [] (Just Vd) -- Return Void 
+    NoOp : Instruction ls os rt -> Instruction ls os rt -- Perform no operation do not change the stack 
+    Dup : Instruction ls (v :: v::os) rt -> Instruction ls (v :: os) rt -- Duplicate the value on top of the stack
+    FlowBreak :{- Instruction ls os (Just rt) -> -}Instruction ls [] Nothing -- Used as a JoinPoint for if, while Instructions to concatenate Instructions
+    -- Jump :Instruction ls os rt ->Instruction ls os rt -- Jump to a Specific Instruction
+    -- CondJump :Instruction ls os rt -> Instruction ls os rt -> Instruction ls (Boolean :: os) rt-- Conditional Jump to a Specific Instruction
+    FunctionCall : {args: (Locals l) }->Func args frt -> Instruction ls (frt :: os) rt -> Instruction ls (args ++ os)  rt -- Call a Function from a provided Func Instance
+    If : Instruction ls ([])  Nothing ->  Maybe (Instruction ls [] Nothing) -> Instruction ls [] rt -> Instruction ls (Boolean :: ([])) rt  -- If instruction takes a Boolean from the Stack and Evaluetes the Possible Branches
+    While: Instruction ls [] (Just Boolean) ->  Instruction ls [] Nothing -> Instruction ls [] rt -> Instruction ls [] rt -- While Instruction takes a Condition that is evaluated repeatedly and if the Condition is not True the Body is executed
+
   data Func: Locals l -> Tpe -> Type where 
     Function :(Environment ls)-> Instruction (args++ls) [] (Just rt) -> Func args rt  
+%name Instruction  instr, instr1, instr2   
 %name Func func, func1, func2  
 
-%name Instruction  instr, instr1, instr2   
 
 
 {-
 This Function is used to inject a follow up instruction that has A FlowBreak Instruction and no Return Type(Nothing) and a Follow up Instruction 
 The Function is used for if and while instructions because there might be a Instruction that Follows
-
 -}
 injInstr : Instruction ls  is Nothing -> Instruction ls [] (Just rt) -> Instruction ls (is) (Just rt)  
 injInstr (LoadConstant val instr) instr' = LoadConstant val $ injInstr instr instr'
@@ -149,23 +162,26 @@ injInstr (FunctionCall func instr) instr'=  FunctionCall func $ injInstr instr i
 -- injInstr Return instr' impossible 
 injInstr (While cond body after) instr' = While cond body $ injInstr after instr'  
 injInstr (NoOp instr) instr' = NoOp $ injInstr instr instr'
-injInstr (Jump instr) instr' = NoOp $ injInstr instr instr'
+{- injInstr (Jump instr) instr' = NoOp $ injInstr instr instr'
+injInstr (CondJump tinstr finstr) instr' = CondJump  (injInstr tinstr instr') (injInstr finstr instr') -}
 injInstr (Dup instr) instr' = Dup $ injInstr instr instr'
-injInstr (CondJump tinstr finstr) instr' = CondJump  (injInstr tinstr instr') (injInstr finstr instr')
 
--- Adjust lookup and update to work with Vect
+--lookup a Value in the Variables by a given Proof
 lookup : Index ts t -> Environment ts -> Value t
 lookup Z (v :: _) = v
 lookup (S k) (_ :: vs) = lookup k vs
---
+
+-- Update a Variable given a Proof and Value
 update : Index ts t -> Value t -> Environment ts -> Environment ts
 update Z newVal (_ :: vs) = newVal :: vs
 update (S n) newVal (v :: vs) = v :: update n newVal vs
+--Execute a UnaryOperation
 performUnOp : UnOp it ot -> Value it -> Value ot
 performUnOp Inc (LongValue i) = (LongValue (i+1))
 performUnOp Not (BooleanValue b) = (BooleanValue (not b))
 performUnOp Dec (LongValue i) = (LongValue (i-1))
 
+--Execute BinaryOpertation
 performBinOp : BinOp it ot -> Value it -> Value it -> Value ot
 performBinOp Append (TextValue i) (TextValue j) = TextValue (i ++ j)
 performBinOp Add (LongValue i) (LongValue j) = LongValue (i + j)
@@ -192,11 +208,6 @@ performBinOp EqF (FloatValue i) (FloatValue j) = BooleanValue (i==j)
 performBinOp LtF (FloatValue i) (FloatValue j) = BooleanValue (i < j) 
 performBinOp GtF (FloatValue i) (FloatValue j) = BooleanValue (i> j)
 
-{- splitEnv : {v: Vect (n+m) Tpe}->  {v1: Vect n Tpe} -> {v2:Vect (m) Tpe}-> (n:Nat) -> (m:Nat) -> Environment v  -> (Environment (v1), Environment v2)
-
-splitEnv' : {n:Nat}->{bs:Vect (plus n m) t}->{os : Vect n t} -> {is : Vect m t} ->{auto prf: os ++ is = bs} ->Environment (bs)  -> (Environment os, Environment is)
-splitEnv' {n = 0} env = (Nil , rewrite (Refl :Vect 0 t ++ Vect m t  = Vect m t) env)
-splitEnv' {n = (S k)} env = ?splitEnv'_rhs_1 -}
 
 
 interpret :Instruction ls os (Just t) -> Environment ls -> Environment os->  Value t
@@ -215,35 +226,36 @@ interpret (If trueInstr Nothing afterInstr) locals ((BooleanValue b) :: oStack) 
 interpret (Store idx instr) locals (v:: oStack) = interpret instr (update idx v locals) oStack
 interpret (Load idx instr) locals oStack = interpret instr locals $ (lookup idx locals) :: oStack
 interpret (FunctionCall (Function ls instr) afterInstr) locals oStack = 
-  let funcRes = interpret instr (mergeEnv oStack  ls) [] 
-  in (interpret afterInstr locals [funcRes])
+  let (args, oStack')= (splitEnv oStack)
+      funcRes = interpret instr (mergeEnv args  ls) [] 
+  in (interpret afterInstr locals (funcRes :: oStack'))
 interpret w@(While cond body after) locals oStack = case (interpret cond locals oStack) of
                                                        (BooleanValue False) => (interpret after locals oStack)
                                                        (BooleanValue True) => interpret (injInstr body w) locals oStack
 interpret (NoOp instr) locals oStack = interpret instr locals oStack
-interpret (Jump instr) locals oStack = interpret instr locals oStack
-interpret (CondJump tinstr finstr) locals (b :: oStack)  = case b of
-                                                                (BooleanValue True) => interpret tinstr locals oStack
-                                                                (BooleanValue False) => interpret finstr locals oStack
 interpret (Dup instr) locals (v::oStack) = interpret instr locals $ v::v::oStack
   
-
+-- Some Basic Examples 
 example :(Instruction [] [] (Just Boolean) )
 prf : Index [Boolean, Long, Boolean] Long
 prf = S Z
 
 flowbreakexample: (Instruction [Boolean, Long, Boolean] [] Nothing) 
 flowbreakexample = LoadConstant (LongValue 42) $ (Store prf FlowBreak)
+
 afterInstr = Load prf $ Return 
+
 ifexample : (Instruction [Boolean, Long, Boolean] [] (Just Long))
 ifexample =LoadConstant (LongValue 10) $   Store prf $LoadConstant (BooleanValue True) ( 
                        If flowbreakexample Nothing (afterInstr ))
+
 locals = [(BooleanValue True), (LongValue 0), (BooleanValue False) ]
+
 examplefunc : Func [Long, Long] Long
 examplefunc = Function Nil (Load (S Z) $ Load Z $ BinaryOperation Add $ LoadConstant (LongValue 42) $ BinaryOperation Mul $ Return) 
-{- simpleExampleFunc : Func [Long] Long
-simpleExampleFunc = Function Nil (LoadConstant (LongValue 42) Return) -}
 
+simpleExampleFunc : Func [Long] Long
+simpleExampleFunc = Function Nil (LoadConstant (LongValue 42) Return) 
 
 whileExample: Instruction [Long] [] (Just Long )
 whileExample = While (Load Z (LoadConstant (LongValue 10) (BinaryOperation Lt Return))) (Load Z (UnaryOperation Inc (Store Z (FlowBreak))) ) (Load (Z) Return)
